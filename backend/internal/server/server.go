@@ -82,6 +82,9 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	sysH := &api.SystemHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
 	jobH := &api.JobHandler{Svc: jobSvc}
 	wsH := &api.WSHandler{Hub: hub, Tokens: tokens}
+	proxyRepo := repository.NewProxyRepo(pool)
+	proxyH := &api.ProxyHandler{Repo: proxyRepo}
+	emailH := &api.EmailHandler{Cfg: cfg}
 
 	v1 := e.Group("/api/v1")
 	v1.GET("/setup/status", setupH.Status)
@@ -104,6 +107,13 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	protected.GET("/jobs/:id", jobH.Get)
 	protected.POST("/jobs/:id/stop", jobH.Stop)
 	protected.GET("/jobs/:id/events", jobH.Events)
+
+	protected.GET("/proxies", proxyH.List)
+	protected.PUT("/proxies", proxyH.Replace)
+	protected.POST("/proxies/validate", proxyH.Validate)
+
+	protected.GET("/email/config", emailH.Config)
+	protected.POST("/email/test", emailH.Test)
 
 	if err := web.Register(e); err != nil {
 		return nil, err
