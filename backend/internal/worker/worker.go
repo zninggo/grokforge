@@ -4,22 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/zninggo/grokforge/internal/domain"
 	"github.com/zninggo/grokforge/internal/queue"
 	"github.com/zninggo/grokforge/internal/repository"
+	"github.com/zninggo/grokforge/internal/service"
 	"github.com/zninggo/grokforge/internal/ws"
 	"go.uber.org/zap"
 )
 
 // Worker consumes Redis queues and executes jobs.
 type Worker struct {
-	Jobs  *repository.JobRepo
-	Queue *queue.Queue
-	Hub   *ws.Hub
-	Log   *zap.Logger
+	Jobs     *repository.JobRepo
+	Queue    *queue.Queue
+	Hub      *ws.Hub
+	Log      *zap.Logger
+	Register *service.RegisterService
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -36,7 +39,6 @@ func (w *Worker) Run(ctx context.Context) {
 			if errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				continue
 			}
-			// transient redis errors
 			w.Log.Warn("brpop", zap.Error(err))
 			time.Sleep(time.Second)
 			continue
@@ -49,7 +51,7 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) handle(ctx context.Context, jobID int64) error {
-	ok, err := w.Queue.TryLock(ctx, jobID, 5*time.Minute)
+	ok, err := w.Queue.TryLock(ctx, jobID, 15*time.Minute)
 	if err != nil {
 		return err
 	}
@@ -74,13 +76,58 @@ func (w *Worker) handle(ctx context.Context, jobID int64) error {
 	switch job.Kind {
 	case domain.JobKindNoop:
 		return w.runNoop(ctx, job)
+	case domain.JobKindRegister:
+		return w.runRegister(ctx, job)
 	default:
-		// Phase 4: only noop is implemented; others fail clearly.
 		msg := "handler not implemented yet for kind=" + job.Kind
 		_ = w.Jobs.MarkFailed(ctx, jobID, "NOT_IMPLEMENTED", msg)
 		_, _ = w.Jobs.AddEvent(ctx, jobID, "error", msg, nil)
 		w.emit("job.finished", map[string]any{"job_id": jobID, "status": domain.JobFailed, "error_code": "NOT_IMPLEMENTED"})
 		return nil
+	}
+}
+
+func (w *Worker) runRegister(ctx context.Context, job *domain.Job) error {
+	if w.Register == nil {
+		msg := "register service not configured"
+		_ = w.Jobs.MarkFailed(ctx, job.ID, "REGISTER_FAILED", msg)
+		w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobFailed, "error_code": "REGISTER_FAILED"})
+		return nil
+	}
+	w.Register.Progress = func(ctx context.Context, jobID int64, percent int, step, message string) {
+		w.emit("job.progress", map[string]any{
+			"job_id": jobID, "status": domain.JobRunning, "percent": percent, "step": step,
+		})
+		w.emit("job.log", map[string]any{"job_id": jobID, "level": "info", "message": message})
+	}
+	err := w.Register.Run(ctx, job.ID)
+	if err != nil {
+		code, msg := mapJobError(err)
+		_ = w.Jobs.MarkFailed(ctx, job.ID, code, msg)
+		_, _ = w.Jobs.AddEvent(ctx, job.ID, "error", msg, map[string]any{"code": code})
+		w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobFailed, "error_code": code})
+		return nil
+	}
+	// RegisterService already MarkSucceeded
+	w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobSucceeded})
+	return nil
+}
+
+func mapJobError(err error) (code, message string) {
+	message = err.Error()
+	switch {
+	case strings.Contains(message, "OTP_TIMEOUT"):
+		return "OTP_TIMEOUT", message
+	case strings.Contains(message, "YYDS"):
+		return "YYDS_ERROR", message
+	case strings.Contains(message, "PROXY"):
+		return "PROXY_BAD", message
+	case strings.Contains(message, "BROWSER"):
+		return "BROWSER_CRASH", message
+	case strings.Contains(message, "REGISTER_FAILED"):
+		return "REGISTER_FAILED", message
+	default:
+		return "REGISTER_FAILED", message
 	}
 }
 
@@ -101,7 +148,6 @@ func (w *Worker) runNoop(ctx context.Context, job *domain.Job) error {
 			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
-		// re-check cancel
 		cur, err := w.Jobs.Get(ctx, job.ID)
 		if err == nil && cur.Status == domain.JobCancelled {
 			_, _ = w.Jobs.AddEvent(ctx, job.ID, "warn", "cancelled during noop", nil)

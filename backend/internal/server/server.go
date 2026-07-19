@@ -9,10 +9,15 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
+	"os"
+	"strings"
+
 	"github.com/zninggo/grokforge/internal/api"
 	"github.com/zninggo/grokforge/internal/auth"
 	"github.com/zninggo/grokforge/internal/buildinfo"
 	"github.com/zninggo/grokforge/internal/config"
+	"github.com/zninggo/grokforge/internal/crypto"
+	"github.com/zninggo/grokforge/internal/plugin/browser/cloak"
 	"github.com/zninggo/grokforge/internal/queue"
 	"github.com/zninggo/grokforge/internal/repository"
 	"github.com/zninggo/grokforge/internal/service"
@@ -63,9 +68,28 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 
 	adminRepo := repository.NewAdminRepo(pool)
 	jobRepo := repository.NewJobRepo(pool)
+	proxyRepo := repository.NewProxyRepo(pool)
+	accountRepo := repository.NewAccountRepo(pool)
 	q := queue.New(rdb)
 	hub := ws.NewHub(log)
 	jobSvc := &service.JobService{Jobs: jobRepo, Queue: q, Hub: hub}
+
+	box, err := crypto.NewBox(cfg.MasterKey)
+	if err != nil {
+		// allow boot without master key only for setup/login; register will fail clearly
+		log.Warn("master key not ready for credential box", zap.Error(err))
+	}
+	dry := strings.EqualFold(os.Getenv("GROKFORGE_CLOAK_DRY_RUN"), "1") ||
+		strings.EqualFold(os.Getenv("GROKFORGE_CLOAK_DRY_RUN"), "true")
+	browserEngine := &cloak.Engine{DryRun: dry}
+	regSvc := &service.RegisterService{
+		Cfg:      cfg,
+		Accounts: accountRepo,
+		Proxies:  proxyRepo,
+		Jobs:     jobRepo,
+		Box:      box,
+		Browser:  browserEngine,
+	}
 
 	h := &api.HealthHandler{
 		Pool:              pool,
@@ -82,7 +106,6 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	sysH := &api.SystemHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
 	jobH := &api.JobHandler{Svc: jobSvc}
 	wsH := &api.WSHandler{Hub: hub, Tokens: tokens}
-	proxyRepo := repository.NewProxyRepo(pool)
 	proxyH := &api.ProxyHandler{Repo: proxyRepo}
 	emailH := &api.EmailHandler{Cfg: cfg}
 
@@ -120,8 +143,15 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	}
 
 	wctx, cancel := context.WithCancel(context.Background())
-	wk := &worker.Worker{Jobs: jobRepo, Queue: q, Hub: hub, Log: log.Named("worker")}
+	wk := &worker.Worker{
+		Jobs:     jobRepo,
+		Queue:    q,
+		Hub:      hub,
+		Log:      log.Named("worker"),
+		Register: regSvc,
+	}
 	go wk.Run(wctx)
+	log.Info("browser engine", zap.String("name", browserEngine.Name()), zap.Bool("available", browserEngine.Available()), zap.Bool("dry_run", dry))
 
 	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb, hub: hub, cancel: cancel}, nil
 }
