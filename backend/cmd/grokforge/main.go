@@ -1,18 +1,124 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/zninggo/grokforge/internal/buildinfo"
+	"github.com/zninggo/grokforge/internal/config"
+	"github.com/zninggo/grokforge/internal/db"
+	"github.com/zninggo/grokforge/internal/logger"
+	"github.com/zninggo/grokforge/internal/migrate"
+	"github.com/zninggo/grokforge/internal/server"
+	"go.uber.org/zap"
 )
 
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Printf("grokforge %s\n", buildinfo.Version)
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-v":
+			fmt.Printf("grokforge %s\n", buildinfo.Version)
+			return
+		case "migrate":
+			if err := runMigrate(); err != nil {
+				fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 	}
-	// Phase 0: skeleton only. Full server arrives in later phases.
-	fmt.Printf("grokforge %s — skeleton OK (HTTP server not started yet)\n", buildinfo.Version)
-	fmt.Println("default listen will be :17890")
+
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	log, err := logger.New(cfg.LogLevel)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = log.Sync() }()
+
+	log.Info("starting", zap.Any("config", cfg.Redacted()), zap.String("version", buildinfo.Version))
+
+	ctx := context.Background()
+
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := migrate.Up(ctx, pool); err != nil {
+		return fmt.Errorf("auto-migrate: %w", err)
+	}
+	log.Info("migrations applied")
+
+	rdb, err := db.NewRedis(ctx, cfg.RedisURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rdb.Close() }()
+
+	srv := server.New(cfg, log, pool, rdb)
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+
+	log.Info("ready", zap.String("hint", server.FormatListenHint(cfg.HTTPAddr)))
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case sig := <-sigCh:
+		log.Info("signal received", zap.String("signal", sig.String()))
+	case err := <-errCh:
+		return err
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+func runMigrate() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log, err := logger.New(cfg.LogLevel)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = log.Sync() }()
+
+	ctx := context.Background()
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	if err := migrate.Up(ctx, pool); err != nil {
+		return err
+	}
+	log.Info("migrate complete")
+	return nil
 }
