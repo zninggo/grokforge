@@ -164,15 +164,20 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	}
 
 	wctx, cancel := context.WithCancel(context.Background())
-	wk := &worker.Worker{
-		Jobs:     jobRepo,
-		Queue:    q,
-		Hub:      hub,
-		Log:      log.Named("worker"),
-		Register: regSvc,
-		Probe:    probeSvc,
+	if rdb != nil {
+		wk := &worker.Worker{
+			Jobs:     jobRepo,
+			Queue:    q,
+			Hub:      hub,
+			Log:      log.Named("worker"),
+			Register: regSvc,
+			Probe:    probeSvc,
+		}
+		go wk.Run(wctx)
+		log.Info("worker started")
+	} else {
+		log.Warn("worker not started (redis not configured)")
 	}
-	go wk.Run(wctx)
 	log.Info("browser engine", zap.String("name", browserEngine.Name()), zap.Bool("available", browserEngine.Available()), zap.Bool("dry_run", dry))
 
 	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb, hub: hub, cancel: cancel}, nil

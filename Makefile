@@ -1,4 +1,4 @@
-.PHONY: backend migrate frontend frontend-embed build test tidy up down check-no-chat image
+.PHONY: backend migrate frontend frontend-embed build test tidy up down redis-dev check-no-chat image
 
 export PATH := /usr/local/go/bin:$(PATH)
 export GOTOOLCHAIN ?= local
@@ -32,11 +32,19 @@ test:
 check-no-chat:
 	bash scripts/check_no_chat.sh
 
+# Optional isolated data sandbox (not default daily path).
 up:
 	docker compose up -d
 
 down:
 	docker compose down
 
+# Optional Redis only for local job queue (loopback). Does not start Postgres.
+redis-dev:
+	docker run --rm -d --name grokforge-redis-dev \
+		-p 127.0.0.1:26379:6379 \
+		redis:7-alpine redis-server --save "" --appendonly no
+
+# Production/release image build — not for day-to-day development.
 image:
 	docker build -t $(IMAGE):$(TAG) .

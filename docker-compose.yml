@@ -1,5 +1,9 @@
-# Data services for local/dev. App image is single-container (Phase 9).
-# Prefer existing Postgres/Redis by setting DATABASE_URL / REDIS_URL in .env.
+# Optional data sandbox for local isolation — NOT the default day-to-day path.
+# Prefer reusing an existing Postgres via DATABASE_URL in .env (GROKFORGE_ENV=dev).
+# App runs as a native binary for development; image build is for release only.
+#
+# Usage: docker compose up -d
+# Maps: Postgres 127.0.0.1:25432 → 5432, Redis 127.0.0.1:26379 → 6379
 services:
   postgres:
     image: postgres:16-alpine

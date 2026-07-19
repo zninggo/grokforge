@@ -45,7 +45,10 @@ func (s *JobService) Create(ctx context.Context, req CreateJobsRequest) ([]domai
 		req.Driver = "noop"
 	}
 
-	// Redis must be up before accepting new jobs.
+	// Redis must be up before accepting new jobs (nil/missing broker → unavailable).
+	if s.Queue == nil || !s.Queue.Available() {
+		return nil, ErrRedisUnavailable
+	}
 	if err := s.Queue.Ping(ctx); err != nil {
 		return nil, ErrRedisUnavailable
 	}
@@ -117,11 +120,13 @@ func (s *JobService) Events(ctx context.Context, jobID, sinceID int64) ([]domain
 }
 
 func (s *JobService) emit(typ string, payload any) {
-	if s.Hub == nil {
+	if s.Hub != nil {
+		s.Hub.Broadcast(ws.Event{Type: typ, Payload: payload})
+	}
+	// best-effort redis pubsub for multi-process later
+	if s.Queue == nil || !s.Queue.Available() {
 		return
 	}
-	s.Hub.Broadcast(ws.Event{Type: typ, Payload: payload})
-	// best-effort redis pubsub for multi-process later
 	b, _ := json.Marshal(ws.Event{Type: typ, TS: time.Now().UTC().Format(time.RFC3339), Payload: payload})
 	_ = s.Queue.Publish(context.Background(), string(b))
 }

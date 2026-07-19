@@ -18,7 +18,10 @@ const (
 	LockJobPrefix = "grokforge:lock:job:"
 )
 
-// Queue is a thin Redis list + pubsub wrapper.
+// ErrUnavailable is returned when Redis is not configured or not reachable for queue ops.
+var ErrUnavailable = fmt.Errorf("redis unavailable")
+
+// Queue is a thin Redis list + pubsub wrapper. A nil client is safe: ops return ErrUnavailable.
 type Queue struct {
 	rdb *redis.Client
 }
@@ -27,7 +30,14 @@ func New(rdb *redis.Client) *Queue {
 	return &Queue{rdb: rdb}
 }
 
+func (q *Queue) Available() bool {
+	return q != nil && q.rdb != nil
+}
+
 func (q *Queue) Ping(ctx context.Context) error {
+	if !q.Available() {
+		return ErrUnavailable
+	}
 	return q.rdb.Ping(ctx).Err()
 }
 
@@ -46,7 +56,7 @@ func QueueNameForKind(kind string) string {
 
 func (q *Queue) Enqueue(ctx context.Context, kind string, jobID int64) error {
 	if err := q.Ping(ctx); err != nil {
-		return fmt.Errorf("redis unavailable: %w", err)
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	key := QueueNameForKind(kind)
 	return q.rdb.LPush(ctx, key, strconv.FormatInt(jobID, 10)).Err()
@@ -54,6 +64,9 @@ func (q *Queue) Enqueue(ctx context.Context, kind string, jobID int64) error {
 
 // BRPop blocks until a job id is available from any of the queues.
 func (q *Queue) BRPop(ctx context.Context, timeout time.Duration, queues ...string) (queue string, jobID int64, err error) {
+	if !q.Available() {
+		return "", 0, ErrUnavailable
+	}
 	if len(queues) == 0 {
 		queues = []string{QueueNoop, QueueRegister, QueueProbe, QueueDefault}
 	}
@@ -72,18 +85,30 @@ func (q *Queue) BRPop(ctx context.Context, timeout time.Duration, queues ...stri
 }
 
 func (q *Queue) TryLock(ctx context.Context, jobID int64, ttl time.Duration) (bool, error) {
+	if !q.Available() {
+		return false, ErrUnavailable
+	}
 	ok, err := q.rdb.SetNX(ctx, LockJobPrefix+strconv.FormatInt(jobID, 10), "1", ttl).Result()
 	return ok, err
 }
 
 func (q *Queue) Unlock(ctx context.Context, jobID int64) error {
+	if !q.Available() {
+		return ErrUnavailable
+	}
 	return q.rdb.Del(ctx, LockJobPrefix+strconv.FormatInt(jobID, 10)).Err()
 }
 
 func (q *Queue) Publish(ctx context.Context, payload string) error {
+	if !q.Available() {
+		return ErrUnavailable
+	}
 	return q.rdb.Publish(ctx, PubSubEvents, payload).Err()
 }
 
 func (q *Queue) Subscribe(ctx context.Context) *redis.PubSub {
+	if !q.Available() {
+		return nil
+	}
 	return q.rdb.Subscribe(ctx, PubSubEvents)
 }

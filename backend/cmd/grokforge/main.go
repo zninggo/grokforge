@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/zninggo/grokforge/internal/buildinfo"
 	"github.com/zninggo/grokforge/internal/config"
 	"github.com/zninggo/grokforge/internal/db"
@@ -66,11 +67,13 @@ func run() error {
 	}
 	log.Info("migrations applied")
 
-	rdb, err := db.NewRedis(ctx, cfg.RedisURL)
+	rdb, err := connectRedis(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = rdb.Close() }()
+	if rdb != nil {
+		defer func() { _ = rdb.Close() }()
+	}
 
 	srv, err := server.New(cfg, log, pool, rdb)
 	if err != nil {
@@ -99,6 +102,20 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// connectRedis returns nil client when Redis URL is empty (dev profile).
+// When URL is set, connection failure is fatal.
+func connectRedis(ctx context.Context, cfg *config.Config, log *zap.Logger) (*redis.Client, error) {
+	if cfg.RedisURL == "" {
+		log.Warn("redis not configured; queue/workers disabled (dev profile)")
+		return nil, nil
+	}
+	rdb, err := db.NewRedis(ctx, cfg.RedisURL)
+	if err != nil {
+		return nil, err
+	}
+	return rdb, nil
 }
 
 func runMigrate() error {

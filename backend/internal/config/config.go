@@ -12,6 +12,7 @@ import (
 
 // Config holds process configuration loaded from env / optional .env file.
 type Config struct {
+	Env         string // GROKFORGE_ENV: "dev" enables lightweight local profile
 	HTTPAddr    string
 	DatabaseURL string
 	RedisURL    string
@@ -20,8 +21,13 @@ type Config struct {
 	YYDSAPIKey  string
 	YYDSDomain  string
 	LogLevel    string
-	// ReadyRequireRedis when true makes /readyz fail if Redis is down.
+	// ReadyRequireRedis when true makes /readyz fail if Redis is down or missing.
 	ReadyRequireRedis bool
+}
+
+// IsDev reports whether the lightweight local development profile is active.
+func (c *Config) IsDev() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Env), "dev")
 }
 
 // Load reads configuration. It optionally loads a .env file from cwd or parent
@@ -45,12 +51,16 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("yyds_api_key", "GROKFORGE_YYDS_API_KEY")
 	_ = v.BindEnv("yyds_domain", "GROKFORGE_YYDS_DOMAIN")
 	_ = v.BindEnv("log_level", "GROKFORGE_LOG_LEVEL")
+	_ = v.BindEnv("env", "GROKFORGE_ENV")
+	_ = v.BindEnv("ready_require_redis", "GROKFORGE_READY_REQUIRE_REDIS")
 
 	v.SetDefault("http_addr", ":17890")
 	v.SetDefault("log_level", "info")
 	v.SetDefault("ready_require_redis", true)
+	v.SetDefault("env", "")
 
 	cfg := &Config{
+		Env:               strings.TrimSpace(v.GetString("env")),
 		HTTPAddr:          v.GetString("http_addr"),
 		DatabaseURL:       firstNonEmpty(v.GetString("database_url"), os.Getenv("DATABASE_URL")),
 		RedisURL:          firstNonEmpty(v.GetString("redis_url"), os.Getenv("REDIS_URL")),
@@ -68,9 +78,15 @@ func Load() (*Config, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL / GROKFORGE_DATABASE_URL is required")
 	}
+
+	// Dev profile: Redis optional. Production / non-dev: Redis required.
 	if cfg.RedisURL == "" {
-		return nil, fmt.Errorf("REDIS_URL / GROKFORGE_REDIS_URL is required")
+		if !cfg.IsDev() {
+			return nil, fmt.Errorf("REDIS_URL / GROKFORGE_REDIS_URL is required (set GROKFORGE_ENV=dev to allow boot without Redis)")
+		}
+		cfg.ReadyRequireRedis = false
 	}
+
 	if len(cfg.JWTSecret) < 16 {
 		return nil, fmt.Errorf("GROKFORGE_JWT_SECRET (or GROKFORGE_MASTER_KEY fallback) must be at least 16 characters")
 	}
@@ -89,6 +105,7 @@ func firstNonEmpty(values ...string) string {
 // Redacted returns a copy safe for logs (secrets stripped).
 func (c *Config) Redacted() map[string]any {
 	return map[string]any{
+		"env":                 c.Env,
 		"http_addr":           c.HTTPAddr,
 		"database_url_set":    c.DatabaseURL != "",
 		"redis_url_set":       c.RedisURL != "",
@@ -98,6 +115,7 @@ func (c *Config) Redacted() map[string]any {
 		"yyds_domain":         c.YYDSDomain,
 		"log_level":           c.LogLevel,
 		"ready_require_redis": c.ReadyRequireRedis,
+		"is_dev":              c.IsDev(),
 	}
 }
 
