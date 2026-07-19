@@ -1,0 +1,39 @@
+# Example stack. Prefer existing Postgres/Redis by pointing .env URLs and
+# running only the app image.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: grokforge
+      POSTGRES_PASSWORD: grokforge
+      POSTGRES_DB: grokforge
+    volumes:
+      - grokforge_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grokforge -d grokforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # no host ports by default — app joins compose network
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # App image lands in Phase 9; local binary for now.
+  # grokforge:
+  #   image: ghcr.io/zninggo/grokforge:latest
+  #   ports:
+  #     - "17890:17890"
+  #   env_file: .env
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+
+volumes:
+  grokforge_pg:
