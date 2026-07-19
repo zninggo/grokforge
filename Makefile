@@ -1,7 +1,9 @@
-.PHONY: backend migrate frontend frontend-embed build test tidy up down check-no-chat
+.PHONY: backend migrate frontend frontend-embed build test tidy up down check-no-chat image
 
 export PATH := /usr/local/go/bin:$(PATH)
 export GOTOOLCHAIN ?= local
+IMAGE ?= ghcr.io/zninggo/grokforge
+TAG ?= latest
 
 backend:
 	cd backend && go build -o bin/grokforge ./cmd/grokforge
@@ -35,3 +37,6 @@ up:
 
 down:
 	docker compose down
+
+image:
+	docker build -t $(IMAGE):$(TAG) .

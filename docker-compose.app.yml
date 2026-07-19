@@ -1,0 +1,52 @@
+# Full stack example: app + postgres + redis.
+# Prefer reusing existing DATABASE_URL / REDIS_URL in production.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: grokforge
+      POSTGRES_PASSWORD: grokforge
+      POSTGRES_DB: grokforge
+      TZ: Asia/Shanghai
+    volumes:
+      - grokforge_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grokforge -d grokforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    image: ghcr.io/zninggo/grokforge:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "17890:17890"
+    environment:
+      GROKFORGE_HTTP_ADDR: ":17890"
+      DATABASE_URL: postgres://grokforge:grokforge@postgres:5432/grokforge?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      GROKFORGE_MASTER_KEY: ${GROKFORGE_MASTER_KEY:-change-me-to-a-long-random-secret}
+      GROKFORGE_JWT_SECRET: ${GROKFORGE_JWT_SECRET:-}
+      GROKFORGE_YYDS_API_KEY: ${GROKFORGE_YYDS_API_KEY:-}
+      GROKFORGE_YYDS_DOMAIN: ${GROKFORGE_YYDS_DOMAIN:-}
+      GROKFORGE_CLOAK_DRY_RUN: ${GROKFORGE_CLOAK_DRY_RUN:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # image embeds HEALTHCHECK on /healthz
+
+volumes:
+  grokforge_pg:
