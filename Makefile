@@ -1,6 +1,7 @@
-.PHONY: backend migrate frontend build test tidy up down
+.PHONY: backend migrate frontend frontend-embed build test tidy up down
 
 export PATH := /usr/local/go/bin:$(PATH)
+export GOTOOLCHAIN ?= local
 
 backend:
 	cd backend && go build -o bin/grokforge ./cmd/grokforge
@@ -12,7 +13,12 @@ migrate: backend
 frontend:
 	cd frontend && pnpm install && pnpm build
 
-build: backend frontend
+frontend-embed: frontend
+	rm -rf backend/internal/web/dist
+	mkdir -p backend/internal/web/dist
+	cp -a frontend/out/. backend/internal/web/dist/
+
+build: frontend-embed backend
 
 tidy:
 	cd backend && go mod tidy

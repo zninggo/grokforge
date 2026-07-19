@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +14,7 @@ import (
 	"github.com/zninggo/grokforge/internal/buildinfo"
 	"github.com/zninggo/grokforge/internal/config"
 	"github.com/zninggo/grokforge/internal/repository"
+	"github.com/zninggo/grokforge/internal/web"
 	"go.uber.org/zap"
 )
 
@@ -66,14 +66,6 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	e.GET("/live", h.Live)
 	e.GET("/readyz", h.Ready)
 	e.GET("/ready", h.Ready)
-	e.GET("/", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]any{
-			"name":    "grokforge",
-			"version": buildinfo.Version,
-			"port":    cfg.HTTPAddr,
-			"message": "API up; admin UI embeds in Phase 3",
-		})
-	})
 
 	setupH := &api.SetupHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
 	authH := &api.AuthHandler{Repo: adminRepo, Tokens: tokens}
@@ -91,6 +83,11 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	protected.POST("/auth/password", authH.ChangePassword)
 	protected.GET("/system/info", sysH.Info)
 	protected.GET("/system/health", sysH.Health)
+
+	// Static admin UI (Next export) last so API routes win.
+	if err := web.Register(e); err != nil {
+		return nil, err
+	}
 
 	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb}, nil
 }
