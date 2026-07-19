@@ -13,18 +13,24 @@ import (
 	"github.com/zninggo/grokforge/internal/auth"
 	"github.com/zninggo/grokforge/internal/buildinfo"
 	"github.com/zninggo/grokforge/internal/config"
+	"github.com/zninggo/grokforge/internal/queue"
 	"github.com/zninggo/grokforge/internal/repository"
+	"github.com/zninggo/grokforge/internal/service"
 	"github.com/zninggo/grokforge/internal/web"
+	"github.com/zninggo/grokforge/internal/worker"
+	"github.com/zninggo/grokforge/internal/ws"
 	"go.uber.org/zap"
 )
 
-// Server wraps the HTTP stack.
+// Server wraps the HTTP stack and background workers.
 type Server struct {
-	echo  *echo.Echo
-	cfg   *config.Config
-	log   *zap.Logger
-	pool  *pgxpool.Pool
-	redis *redis.Client
+	echo   *echo.Echo
+	cfg    *config.Config
+	log    *zap.Logger
+	pool   *pgxpool.Pool
+	redis  *redis.Client
+	hub    *ws.Hub
+	cancel context.CancelFunc
 }
 
 func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Client) (*Server, error) {
@@ -56,6 +62,10 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	}))
 
 	adminRepo := repository.NewAdminRepo(pool)
+	jobRepo := repository.NewJobRepo(pool)
+	q := queue.New(rdb)
+	hub := ws.NewHub(log)
+	jobSvc := &service.JobService{Jobs: jobRepo, Queue: q, Hub: hub}
 
 	h := &api.HealthHandler{
 		Pool:              pool,
@@ -70,12 +80,17 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	setupH := &api.SetupHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
 	authH := &api.AuthHandler{Repo: adminRepo, Tokens: tokens}
 	sysH := &api.SystemHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
+	jobH := &api.JobHandler{Svc: jobSvc}
+	wsH := &api.WSHandler{Hub: hub, Tokens: tokens}
 
 	v1 := e.Group("/api/v1")
 	v1.GET("/setup/status", setupH.Status)
 	v1.POST("/setup/init", setupH.Init)
 	v1.POST("/auth/login", authH.Login)
 	v1.POST("/auth/refresh", authH.Refresh)
+
+	// WS auth is token-based (query/header); not under setup middleware group.
+	e.GET("/ws/v1", wsH.Connect)
 
 	protected := v1.Group("", api.RequireSetup(adminRepo), api.RequireAuth(tokens))
 	protected.POST("/auth/logout", authH.Logout)
@@ -84,12 +99,21 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	protected.GET("/system/info", sysH.Info)
 	protected.GET("/system/health", sysH.Health)
 
-	// Static admin UI (Next export) last so API routes win.
+	protected.POST("/jobs", jobH.Create)
+	protected.GET("/jobs", jobH.List)
+	protected.GET("/jobs/:id", jobH.Get)
+	protected.POST("/jobs/:id/stop", jobH.Stop)
+	protected.GET("/jobs/:id/events", jobH.Events)
+
 	if err := web.Register(e); err != nil {
 		return nil, err
 	}
 
-	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb}, nil
+	wctx, cancel := context.WithCancel(context.Background())
+	wk := &worker.Worker{Jobs: jobRepo, Queue: q, Hub: hub, Log: log.Named("worker")}
+	go wk.Run(wctx)
+
+	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb, hub: hub, cancel: cancel}, nil
 }
 
 func (s *Server) Start() error {
@@ -98,10 +122,12 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.cancel != nil {
+		s.cancel()
+	}
 	return s.echo.Shutdown(ctx)
 }
 
-// Addr helps tests.
 func (s *Server) Addr() string {
 	return s.cfg.HTTPAddr
 }
