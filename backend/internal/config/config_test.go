@@ -25,12 +25,17 @@ func TestLoadOK(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://u:p@localhost:5432/db?sslmode=disable")
 	t.Setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 	t.Setenv("GROKFORGE_HTTP_ADDR", ":17890")
+	t.Setenv("GROKFORGE_JWT_SECRET", "0123456789abcdef")
+	t.Setenv("GROKFORGE_MASTER_KEY", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.HTTPAddr != ":17890" {
 		t.Fatalf("addr=%s", cfg.HTTPAddr)
+	}
+	if cfg.JWTSecret != "0123456789abcdef" {
+		t.Fatalf("jwt=%s", cfg.JWTSecret)
 	}
 	r := cfg.Redacted()
 	if r["database_url_set"] != true {

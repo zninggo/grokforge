@@ -16,6 +16,7 @@ type Config struct {
 	DatabaseURL string
 	RedisURL    string
 	MasterKey   string
+	JWTSecret   string
 	YYDSAPIKey  string
 	YYDSDomain  string
 	LogLevel    string
@@ -40,6 +41,7 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("redis_url", "GROKFORGE_REDIS_URL", "REDIS_URL")
 	_ = v.BindEnv("http_addr", "GROKFORGE_HTTP_ADDR")
 	_ = v.BindEnv("master_key", "GROKFORGE_MASTER_KEY")
+	_ = v.BindEnv("jwt_secret", "GROKFORGE_JWT_SECRET")
 	_ = v.BindEnv("yyds_api_key", "GROKFORGE_YYDS_API_KEY")
 	_ = v.BindEnv("yyds_domain", "GROKFORGE_YYDS_DOMAIN")
 	_ = v.BindEnv("log_level", "GROKFORGE_LOG_LEVEL")
@@ -53,6 +55,7 @@ func Load() (*Config, error) {
 		DatabaseURL:       firstNonEmpty(v.GetString("database_url"), os.Getenv("DATABASE_URL")),
 		RedisURL:          firstNonEmpty(v.GetString("redis_url"), os.Getenv("REDIS_URL")),
 		MasterKey:         v.GetString("master_key"),
+		JWTSecret:         firstNonEmpty(v.GetString("jwt_secret"), v.GetString("master_key")),
 		YYDSAPIKey:        v.GetString("yyds_api_key"),
 		YYDSDomain:        v.GetString("yyds_domain"),
 		LogLevel:          v.GetString("log_level"),
@@ -67,6 +70,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.RedisURL == "" {
 		return nil, fmt.Errorf("REDIS_URL / GROKFORGE_REDIS_URL is required")
+	}
+	if len(cfg.JWTSecret) < 16 {
+		return nil, fmt.Errorf("GROKFORGE_JWT_SECRET (or GROKFORGE_MASTER_KEY fallback) must be at least 16 characters")
 	}
 	return cfg, nil
 }
@@ -87,6 +93,7 @@ func (c *Config) Redacted() map[string]any {
 		"database_url_set":    c.DatabaseURL != "",
 		"redis_url_set":       c.RedisURL != "",
 		"master_key_set":      c.MasterKey != "",
+		"jwt_secret_set":      c.JWTSecret != "",
 		"yyds_api_key_set":    c.YYDSAPIKey != "",
 		"yyds_domain":         c.YYDSDomain,
 		"log_level":           c.LogLevel,

@@ -72,7 +72,10 @@ func run() error {
 	}
 	defer func() { _ = rdb.Close() }()
 
-	srv := server.New(cfg, log, pool, rdb)
+	srv, err := server.New(cfg, log, pool, rdb)
+	if err != nil {
+		return err
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

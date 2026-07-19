@@ -11,21 +11,28 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/redis/go-redis/v9"
 	"github.com/zninggo/grokforge/internal/api"
+	"github.com/zninggo/grokforge/internal/auth"
 	"github.com/zninggo/grokforge/internal/buildinfo"
 	"github.com/zninggo/grokforge/internal/config"
+	"github.com/zninggo/grokforge/internal/repository"
 	"go.uber.org/zap"
 )
 
 // Server wraps the HTTP stack.
 type Server struct {
-	echo   *echo.Echo
-	cfg    *config.Config
-	log    *zap.Logger
-	pool   *pgxpool.Pool
-	redis  *redis.Client
+	echo  *echo.Echo
+	cfg   *config.Config
+	log   *zap.Logger
+	pool  *pgxpool.Pool
+	redis *redis.Client
 }
 
-func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Client) *Server {
+func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Client) (*Server, error) {
+	tokens, err := auth.NewTokenService(cfg.JWTSecret)
+	if err != nil {
+		return nil, err
+	}
+
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -48,6 +55,8 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 		},
 	}))
 
+	adminRepo := repository.NewAdminRepo(pool)
+
 	h := &api.HealthHandler{
 		Pool:              pool,
 		Redis:             rdb,
@@ -66,7 +75,24 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 		})
 	})
 
-	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb}
+	setupH := &api.SetupHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
+	authH := &api.AuthHandler{Repo: adminRepo, Tokens: tokens}
+	sysH := &api.SystemHandler{Repo: adminRepo, Pool: pool, Redis: rdb}
+
+	v1 := e.Group("/api/v1")
+	v1.GET("/setup/status", setupH.Status)
+	v1.POST("/setup/init", setupH.Init)
+	v1.POST("/auth/login", authH.Login)
+	v1.POST("/auth/refresh", authH.Refresh)
+
+	protected := v1.Group("", api.RequireSetup(adminRepo), api.RequireAuth(tokens))
+	protected.POST("/auth/logout", authH.Logout)
+	protected.GET("/auth/me", authH.Me)
+	protected.POST("/auth/password", authH.ChangePassword)
+	protected.GET("/system/info", sysH.Info)
+	protected.GET("/system/health", sysH.Health)
+
+	return &Server{echo: e, cfg: cfg, log: log, pool: pool, redis: rdb}, nil
 }
 
 func (s *Server) Start() error {
