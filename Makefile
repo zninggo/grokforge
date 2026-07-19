@@ -1,4 +1,4 @@
-.PHONY: backend migrate frontend frontend-embed build test tidy up down
+.PHONY: backend migrate frontend frontend-embed build test tidy up down check-no-chat
 
 export PATH := /usr/local/go/bin:$(PATH)
 export GOTOOLCHAIN ?= local
@@ -25,6 +25,10 @@ tidy:
 
 test:
 	cd backend && go test ./...
+	$(MAKE) check-no-chat
+
+check-no-chat:
+	bash scripts/check_no_chat.sh
 
 up:
 	docker compose up -d

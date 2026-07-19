@@ -108,6 +108,16 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	wsH := &api.WSHandler{Hub: hub, Tokens: tokens}
 	proxyH := &api.ProxyHandler{Repo: proxyRepo}
 	emailH := &api.EmailHandler{Cfg: cfg}
+	auditRepo := repository.NewAuditRepo(pool)
+	probeSvc := &service.ProbeService{Accounts: accountRepo, Box: box}
+	accountH := &api.AccountHandler{
+		Accounts: accountRepo,
+		Audit:    auditRepo,
+		Box:      box,
+		Probe:    probeSvc,
+		Jobs:     jobSvc,
+	}
+	auditH := &api.AuditHandler{Repo: auditRepo}
 
 	v1 := e.Group("/api/v1")
 	v1.GET("/setup/status", setupH.Status)
@@ -138,6 +148,17 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 	protected.GET("/email/config", emailH.Config)
 	protected.POST("/email/test", emailH.Test)
 
+	protected.GET("/accounts", accountH.List)
+	protected.GET("/accounts/:id", accountH.Get)
+	protected.DELETE("/accounts/:id", accountH.Delete)
+	protected.POST("/accounts/delete-batch", accountH.DeleteBatch)
+	protected.POST("/accounts/export", accountH.Export)
+	protected.POST("/accounts/:id/probe", accountH.ProbeOne)
+	protected.POST("/accounts/probe-batch", accountH.ProbeBatch)
+	protected.POST("/accounts/probe-all", accountH.ProbeAll)
+
+	protected.GET("/audit", auditH.List)
+
 	if err := web.Register(e); err != nil {
 		return nil, err
 	}
@@ -149,6 +170,7 @@ func New(cfg *config.Config, log *zap.Logger, pool *pgxpool.Pool, rdb *redis.Cli
 		Hub:      hub,
 		Log:      log.Named("worker"),
 		Register: regSvc,
+		Probe:    probeSvc,
 	}
 	go wk.Run(wctx)
 	log.Info("browser engine", zap.String("name", browserEngine.Name()), zap.Bool("available", browserEngine.Available()), zap.Bool("dry_run", dry))

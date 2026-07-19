@@ -23,6 +23,7 @@ type Worker struct {
 	Hub      *ws.Hub
 	Log      *zap.Logger
 	Register *service.RegisterService
+	Probe    *service.ProbeService
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -78,6 +79,8 @@ func (w *Worker) handle(ctx context.Context, jobID int64) error {
 		return w.runNoop(ctx, job)
 	case domain.JobKindRegister:
 		return w.runRegister(ctx, job)
+	case domain.JobKindProbe:
+		return w.runProbe(ctx, job)
 	default:
 		msg := "handler not implemented yet for kind=" + job.Kind
 		_ = w.Jobs.MarkFailed(ctx, jobID, "NOT_IMPLEMENTED", msg)
@@ -129,6 +132,59 @@ func mapJobError(err error) (code, message string) {
 	default:
 		return "REGISTER_FAILED", message
 	}
+}
+
+func (w *Worker) runProbe(ctx context.Context, job *domain.Job) error {
+	if w.Probe == nil {
+		msg := "probe service not configured"
+		_ = w.Jobs.MarkFailed(ctx, job.ID, "PROBE_FAILED", msg)
+		w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobFailed, "error_code": "PROBE_FAILED"})
+		return nil
+	}
+	var opts map[string]any
+	_ = json.Unmarshal(job.Options, &opts)
+	var accountID int64
+	switch v := opts["account_id"].(type) {
+	case float64:
+		accountID = int64(v)
+	case int64:
+		accountID = v
+	case json.Number:
+		n, _ := v.Int64()
+		accountID = n
+	}
+	if accountID == 0 {
+		msg := "account_id missing in job options"
+		_ = w.Jobs.MarkFailed(ctx, job.ID, "VALIDATION_ERROR", msg)
+		w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobFailed, "error_code": "VALIDATION_ERROR"})
+		return nil
+	}
+	_ = w.Jobs.UpdateProgress(ctx, job.ID, 20, "probe")
+	_, _ = w.Jobs.AddEvent(ctx, job.ID, "info", "probing account", map[string]any{"account_id": accountID})
+	res, err := w.Probe.ProbeAccount(ctx, accountID)
+	if err != nil {
+		code := "PROBE_FAILED"
+		if errors.Is(err, service.ErrNoMasterKey) {
+			code = "FORBIDDEN"
+		}
+		_ = w.Jobs.MarkFailed(ctx, job.ID, code, err.Error())
+		_, _ = w.Jobs.AddEvent(ctx, job.ID, "error", err.Error(), map[string]any{"code": code})
+		w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobFailed, "error_code": code})
+		return nil
+	}
+	_ = w.Jobs.UpdateProgress(ctx, job.ID, 100, "done")
+	_ = w.Jobs.MarkSucceeded(ctx, job.ID, map[string]any{
+		"account_id":    res.AccountID,
+		"email":         res.Email,
+		"health_status": res.HealthStatus,
+		"detail":        res.Detail,
+	})
+	_, _ = w.Jobs.AddEvent(ctx, job.ID, "info", "probe done: "+res.HealthStatus, map[string]any{"detail": res.Detail})
+	w.emit("probe.progress", map[string]any{
+		"job_id": job.ID, "account_id": res.AccountID, "health_status": res.HealthStatus,
+	})
+	w.emit("job.finished", map[string]any{"job_id": job.ID, "status": domain.JobSucceeded})
+	return nil
 }
 
 func (w *Worker) runNoop(ctx context.Context, job *domain.Job) error {
